@@ -1,0 +1,32 @@
+# Environments
+.env
+
+# Databases
+database/*.db
+
+# Logs and temp files
+logs/*.log
+temp/
+
+# Python cache and build files
+__pycache__/
+*.pyc
+venv/
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+downloads/
+
+workspace/
+client_secrets.json
+
+# Test files
+test/
+*.mp4
+*.wav
+*.mp3
+
+# Model assets
+assets/kokoro/

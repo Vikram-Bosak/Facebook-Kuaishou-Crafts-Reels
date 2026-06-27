@@ -1,0 +1,62 @@
+name: Kuaishou Crafts Automated Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Trigger 6 times a day (every 4 hours)
+    # UTC Equivalent: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00
+    - cron: '0 0,4,8,12,16,20 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-pipeline:
+    name: End-to-End Kuaishou Crafts Pipeline
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Prevent concurrent runs of the workflow
+    concurrency:
+      group: kuaishou-crafts-pipeline
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Run Kuaishou Crafts Pipeline Orchestrator (main_agent.py)
+        id: main_agent
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "Starting Main Agent for Kuaishou Crafts..."
+          python main_agent.py
+
+      - name: Commit updated history
+        if: always()
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add downloaded_history.txt || true
+          git commit -m "Update download history" || true
+          git pull --rebase origin main || true
+          git push origin main || true
