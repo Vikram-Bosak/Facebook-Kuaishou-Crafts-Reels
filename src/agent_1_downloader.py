@@ -1,24 +1,13 @@
 import os
+import re
 import json
-import asyncio
-import sys
-from dotenv import load_dotenv
+import urllib.parse
+import requests
 
-# Prevent encoding crashes when printing Chinese characters to standard output
-try:
-    sys.stdout.reconfigure(encoding='utf-8')
-except Exception:
-    pass
-
-load_dotenv()
 HISTORY_FILE = 'downloaded_history.txt'
 QUEUE_FILE = 'workspace/queue.json'
 
-# Chinese craft keywords for filtering
-CRAFT_KEYWORDS = ["竹编", "木工", "陶瓷", "手工", "非遗", "手工艺", "编织", "木雕",
-                   "陶艺", "竹艺", "匠心", "传统", "craft", "woodwork", "pottery",
-                   "bamboo", "handmade", "artisan"]
-
+CRAFT_KEYWORDS = ["手工", "木工", "陶艺", "竹编", "非遗", "木雕", "编织", "锻造"]
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -26,13 +15,12 @@ def load_history():
             return set(f.read().splitlines())
     return set()
 
-
 def save_to_history(video_id):
     with open(HISTORY_FILE, 'a') as f:
         f.write(f"{video_id}\n")
 
-
 def load_queue():
+    os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
     if os.path.exists(QUEUE_FILE):
         try:
             with open(QUEUE_FILE, 'r') as f:
@@ -41,117 +29,141 @@ def load_queue():
             return []
     return []
 
-
 def save_queue(queue):
     os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
     with open(QUEUE_FILE, 'w') as f:
         json.dump(queue, f, indent=2, ensure_ascii=False)
 
-
-async def scan_kuaishou_craft_videos():
-    print("Scanning Kuaishou for satisfying craft videos...")
+def scan_bilibili_crafts():
+    print("Scanning Bilibili for craft videos...")
     history = load_history()
     queue = load_queue()
     queued_ids = {item['id'] for item in queue}
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://www.bilibili.com/"
+    }
+    
     new_candidates = []
-
-    try:
-        from playwright.async_api import async_playwright
-
-        # Target URLs: Kuaishou recommendation feed and craft-related searches
-        target_urls = [
-            "https://www.kuaishou.com/new-reco",
-            "https://www.kuaishou.com/search/video?searchKey=%E7%AB%B9%E7%BC%96",
-            "https://www.kuaishou.com/search/video?searchKey=%E6%9C%A8%E5%B7%A5",
-            "https://www.kuaishou.com/search/video?searchKey=%E9%99%B6%E7%93%B7",
-            "https://www.kuaishou.com/search/video?searchKey=%E6%89%8B%E5%B7%A5",
-            "https://www.kuaishou.com/search/video?searchKey=%E9%9D%9E%E9%81%97",
-        ]
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={'width': 1280, 'height': 800}
-            )
-            page = await context.new_page()
-
-            for target_url in target_urls:
-                try:
-                    print(f"Playwright scraping: {target_url}")
-                    await page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-                    await page.wait_for_timeout(5000)
-
-                    # Extract links containing short-video or Kwai video patterns
-                    links = await page.query_selector_all('a')
-                    for link in links:
-                        href = await link.get_attribute('href')
-                        if href and ('/short-video/' in href or '/video/' in href or '/f/' in href):
-                            vid = href.split('/')[-1].split('?')[0]
-                            if vid and vid not in history and vid not in queued_ids:
-                                text = await link.inner_text()
-                                text_cleaned = ' '.join(text.split())
-
-                                # Check if the text or URL matches craft keywords
-                                is_craft = any(kw in text_cleaned.lower() for kw in CRAFT_KEYWORDS)
-                                is_craft = is_craft or any(kw in href.lower() for kw in CRAFT_KEYWORDS)
-
-                                # Also accept videos from craft search pages
-                                is_craft = is_craft or 'searchKey' in target_url
-
-                                if is_craft:
-                                    full_url = f"https://www.kuaishou.com/short-video/{vid}" if not href.startswith('http') else href
-                                    new_candidates.append({
-                                        "id": vid,
-                                        "title": text_cleaned[:120] if text_cleaned else f"Kuaishou Craft Video {vid}",
-                                        "source_url": full_url,
-                                        "status": "PENDING"
-                                    })
-                                    print(f"Discovered Kuaishou craft video: ID={vid} | Title={text_cleaned[:50] if text_cleaned else vid}")
-
-                except Exception as e:
-                    print(f"Error scraping {target_url} with Playwright: {e}")
-
-            await browser.close()
-
-    except Exception as err:
-        print(f"Playwright scraper skipped/failed: {err}")
-
-    # Save unique new candidates to queue
+    for kw in CRAFT_KEYWORDS:
+        try:
+            url = f"https://api.bilibili.com/x/web-interface/wbi/search/all/v2?keyword={urllib.parse.quote(kw)}"
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get('code') == 0:
+                    result = data.get('data', {}).get('result', [])
+                    video_result = None
+                    if isinstance(result, list):
+                        for item in result:
+                            if isinstance(item, dict) and item.get('result_type') == 'video':
+                                video_result = item
+                                break
+                    if video_result:
+                        for v in video_result.get('data', [])[:3]:
+                            bvid = v.get('bvid')
+                            if not bvid or bvid in history or bvid in queued_ids:
+                                continue
+                            title_clean = re.sub(r'<[^>]+>', '', v.get('title', ''))
+                            new_candidates.append({
+                                "id": bvid,
+                                "title": title_clean[:120],
+                                "source_url": f"https://www.bilibili.com/video/{bvid}",
+                                "status": "PENDING"
+                            })
+                            print(f"Found: {bvid} | {title_clean[:50]}")
+        except Exception as e:
+            print(f"Error scanning '{kw}': {e}")
+    
     if new_candidates:
-        unique_candidates = []
-        seen_ids = set(queued_ids)
-        for c in new_candidates:
-            if c['id'] not in seen_ids:
-                unique_candidates.append(c)
-                seen_ids.add(c['id'])
-
-        if unique_candidates:
-            queue.extend(unique_candidates)
+        seen_ids = {c['id'] for c in queue}
+        unique = [c for c in new_candidates if c['id'] not in seen_ids]
+        if unique:
+            queue.extend(unique)
             save_queue(queue)
-            print(f"Added {len(unique_candidates)} new craft videos to the queue.")
-        else:
-            print("No new unique craft videos discovered in this scan.")
-    else:
-        print("No new unique craft videos discovered in this scan.")
+            print(f"Added {len(unique)} videos to queue.")
 
+def download_bilibili_video(bilibili_url, output_filename, max_retries=3):
+    """Download Bilibili video using playurl API with retry"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com/"
+    }
+    try:
+        match = re.search(r'video/(BV[a-zA-Z0-9]+)', bilibili_url)
+        if not match:
+            print("Invalid Bilibili URL")
+            return False
+        bvid = match.group(1)
+        
+        view_api = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+        res = requests.get(view_api, headers=headers, timeout=15).json()
+        if res.get('code') != 0:
+            return False
+        cid = res['data']['cid']
+        print(f"  Got CID: {cid}")
+        
+        play_api = f"https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}&qn=16"
+        play_res = requests.get(play_api, headers=headers, timeout=15).json()
+        if 'durl' not in play_res.get('data', {}):
+            print("No video stream found")
+            return False
+        video_cdn_url = play_res['data']['durl'][0]['url']
+        print(f"  Got stream URL")
+        
+        # Download with retry
+        os.makedirs(os.path.dirname(output_filename), exist_ok=True)
+        for attempt in range(max_retries):
+            try:
+                print(f"  Downloading video (attempt {attempt+1}/{max_retries})...")
+                response = requests.get(video_cdn_url, headers=headers, timeout=120, stream=True)
+                with open(output_filename, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                file_size = os.path.getsize(output_filename)
+                if file_size > 10000:  # At least 10KB
+                    print(f"  Downloaded: {output_filename} ({file_size/1024/1024:.1f} MB)")
+                    return True
+                else:
+                    print(f"  File too small ({file_size} bytes), retrying...")
+                    os.remove(output_filename)
+            except Exception as e:
+                print(f"  Attempt {attempt+1} failed: {e}")
+                if os.path.exists(output_filename):
+                    os.remove(output_filename)
+        
+        print("  All download attempts failed")
+        return False
+    except Exception as e:
+        print(f"Download error: {e}")
+        return False
 
 def run_downloader():
-    print("Running Downloader: Scanning Kuaishou for craft videos...")
-    try:
-        asyncio.run(scan_kuaishou_craft_videos())
-    except Exception as e:
-        print(f"Async scan failed: {e}")
-
-    # Return the first PENDING video in the queue if available
+    print("Running Bilibili Craft Downloader...")
+    scan_bilibili_crafts()
+    
     queue = load_queue()
     pending = [item for item in queue if item['status'] == 'PENDING']
+    
     if pending:
         item = pending[0]
-        print(f"Next pending video: {item['title']} ({item['source_url']})")
-        return item
+        output_path = "workspace/raw_video.mp4"
+        print(f"\nDownloading: {item['source_url']}")
+        
+        if download_bilibili_video(item['source_url'], output_path):
+            item['status'] = 'DOWNLOADED'
+            item['local_path'] = output_path
+            save_queue(queue)
+            save_to_history(item['id'])
+            return item
+        else:
+            print("Download failed.")
+            return None
+    
+    print("No pending videos.")
     return None
-
 
 if __name__ == "__main__":
     run_downloader()
